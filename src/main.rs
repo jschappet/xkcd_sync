@@ -1,180 +1,42 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::io::{BufReader, BufWriter};
-use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use threadpool::ThreadPool;
+use std::time::Duration;
 
-mod cli_progress;
+fn main() {
+    // Create a vector of numbers to calculate squares for.
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::fs;
+    // Create a thread pool with 4 threads.
+    let pool = ThreadPool::new(4);
 
-use crate::cli_progress::ProgressBar;
+    // Shared vector to store the results, wrapped in Arc and Mutex for thread-safe access.
+    let results = Arc::new(Mutex::new(Vec::new()));
 
-#[derive(Deserialize, Serialize, Debug)]
-struct Xkcd {
-    month: String,
-    link: String,
-    year: String,
-    news: String,
-    safe_title: String,
-    transcript: String,
-    alt: String,
-    title: String,
-    day: String,
-    num: usize,
-    img: String,
-}
+    for num in numbers {
+        // Clone Arc so that each thread has ownership of the reference.
+        let results = Arc::clone(&results);
 
-type SyncState = HashMap<usize, Xkcd>;
+        // Execute each task in the thread pool.
+        pool.execute(move || {
+            let square = num * num;
+            println!("Calculating square of {}: {}", num, square);
 
-fn fetch_json(url: &str) -> Result<Xkcd> {
-    let reader = ureq::get(url)
-        .call()
-        .context(format!("fetching {url}"))?
-        .into_reader();
+            // Simulate work with sleep.
+            std::thread::sleep(Duration::from_millis(500));
 
-    let xkcd: Xkcd =
-        serde_json::from_reader(BufReader::new(reader)).context("deserializing xkcd json")?;
-
-    Ok(xkcd)
-}
-
-fn build_json_url_for_num(num: usize) -> String {
-    format!("http://xkcd.com/{num}/info.0.json")
-}
-
-fn create_image_file_path(num: usize, comic_url: &str, comic_dir: &str) -> Result<PathBuf> {
-    let comic_file_name = comic_url.split('/').last().context(format!(
-        "extracting filename from image url {url}",
-        url = comic_url
-    ))?;
-    let mut comic_path_name = PathBuf::new();
-    comic_path_name.push(comic_dir);
-    comic_path_name.push(format!("{num:05}_{file}", file = comic_file_name));
-    Ok(comic_path_name)
-}
-
-fn download_xkcd_image_to_dir(xkcd: &Xkcd, target_file: &Path) -> Result<()> {
-    let img_reader = ureq::get(&xkcd.img)
-        .call()
-        .context(format!("fetching {url}", url = xkcd.img))?
-        .into_reader();
-    let writer =
-        fs::File::create(target_file).context(format!("open {target_file:?} for writing"))?;
-
-    std::io::copy(&mut BufReader::new(img_reader), &mut BufWriter::new(writer)).context(
-        format!(
-            "stream data from {url} to {file:?}",
-            url = xkcd.img,
-            file = target_file
-        ),
-    )?;
-    Ok(())
-}
-
-fn main() -> Result<()> {
-    // @TODO: Extract to commandline arguments
-    let comic_dir = "comics";
-    let sync_state_file = "xkcd_sync_state.json";
-
-    fs::create_dir_all(comic_dir)
-        .context(format!("create commic storage directory {comic_dir}"))?;
-
-    println!("Opening {file} as sync state", file = sync_state_file);
-    let mut sync_state = match fs::File::open(sync_state_file) {
-        Ok(file) => serde_json::from_reader(BufReader::new(file)).context(format!(
-            "deserializing sync state from {file}",
-            file = sync_state_file
-        ))?,
-        Err(_) => SyncState::new(),
-    };
-
-    let pb = ProgressBar {
-        full_chars: Vec::from(cli_progress::UNICODE_BAR_FULL_CHARS),
-        empty_char: ' ',
-        ..ProgressBar::default()
-    };
-
-    pb.update(0f32, "Fetching latest comic information...")?;
-
-    let lastest_url = "https://xkcd.com/info.0.json";
-    let latest = fetch_json(lastest_url)?;
-
-    let mut updated = 0;
-    let mut skipped = 0;
-    for num in 1..=latest.num {
-        let mut already_updated = false;
-        if let Entry::Vacant(e) = sync_state.entry(num) {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Fetching comic metadata #{num}"),
-            )?;
-            let json_url = build_json_url_for_num(num);
-            match fetch_json(&json_url) {
-                Ok(xkcd) => {
-                    e.insert(xkcd);
-                    updated += 1;
-                    already_updated = true;
-                }
-                Err(error) => {
-                    println!(
-                        "Error retrieving metadata for #{num}: {err}",
-                        err = error.root_cause()
-                    );
-                    println!("Note: Skipping #{num} as it will be retieved next time.");
-                    continue;
-                }
-            }
-        }
-        let xkcd = sync_state.get(&num).unwrap();
-
-        let comic_target_path = create_image_file_path(num, &xkcd.img, comic_dir)?;
-        if comic_target_path.try_exists().context(format!(
-            "establishing whether {file:?} exists",
-            file = comic_target_path
-        ))? {
-            skipped += 1;
-        } else {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Fetching comic image #{num}"),
-            )?;
-            match download_xkcd_image_to_dir(xkcd, &comic_target_path) {
-                Ok(_) => {
-                    if !already_updated {
-                        updated += 1;
-                    }
-                }
-                Err(error) => {
-                    println!(
-                        "Error retrieving image for #{num}: {err}",
-                        err = error.root_cause()
-                    );
-                    println!("Note: Skipping #{num} as it will be retieved next time.");
-                    continue;
-                }
-            }
-        }
-
-        if updated > 0 && updated % 50 == 0 {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Saving sync state to {file}", file = sync_state_file),
-            )?;
-            let file = fs::File::create(sync_state_file)
-                .context(format!("open {file} for writing", file = sync_state_file))?;
-            serde_json::to_writer(BufWriter::new(file), &sync_state)
-                .context("serialize sync state")?;
-        }
+            // Store the result.
+            let mut results = results.lock().unwrap();
+            results.push((num, square));
+        });
     }
 
-    println!("Saving sync state to {file}", file = sync_state_file);
-    let file = fs::File::create(sync_state_file)
-        .context(format!("open {file} for writing", file = sync_state_file))?;
-    serde_json::to_writer(BufWriter::new(file), &sync_state).context("serialize sync state")?;
+    // Wait for all tasks to finish by dropping the pool.
+    pool.join();
 
-    println!("Finished sync run: Updated {updated} comics, skipped {skipped} comics.");
-
-    Ok(())
+    // Print the results.
+    let results = results.lock().unwrap();
+    println!("\nResults:");
+    for (num, square) in results.iter() {
+        println!("{}^2 = {}", num, square);
+    }
 }
