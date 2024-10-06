@@ -13,6 +13,14 @@ Simply use `cargo build --release` to create a release build.
 
 Execute the built application at `target/release/xkcd_sync` or use `cargo run --release`
 
+Usage: xkcd_sync [OPTIONS]
+
+  Options:
+    -c, --comic-dir <COMIC_DIR>              Optional name to operate on [default: comics]
+    -s, --sync-state-file <SYNC_STATE_FILE>  [default: xkcd_sync_state.json]
+    -n, --num-threads <NUM_THREADS>          [default: 4]
+    -h, --help                               Print help
+
 ## Storage paths
 
 At the moment the sync state will always be read and stored within the current

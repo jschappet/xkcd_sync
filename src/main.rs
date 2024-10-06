@@ -1,121 +1,91 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::io::{BufReader, BufWriter};
-use std::path::{Path, PathBuf};
-
+use crate::cli_progress::ProgressBar;
 mod cli_progress;
 
+mod app_state;
+mod xkcd;
+use crate::xkcd::Xkcd;
+
+use app_state::AppState;
+
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+//use serde::{Deserialize, Serialize};
 use std::fs;
 
-use crate::cli_progress::ProgressBar;
+use clap::Parser;
+use std::sync::mpsc;
 
-#[derive(Deserialize, Serialize, Debug)]
-struct Xkcd {
-    month: String,
-    link: String,
-    year: String,
-    news: String,
-    safe_title: String,
-    transcript: String,
-    alt: String,
-    title: String,
-    day: String,
+//use std::time::Duration;
+use threadpool::ThreadPool;
+#[derive(Parser)]
+struct Cli {
+    /// Optional name to operate on
+    #[arg(short, long, default_value_t = String::from("comics"))]
+    comic_dir: String,
+
+    #[arg(short, long, default_value_t = String::from("xkcd_sync_state.json"))]
+    sync_state_file: String,
+
+    #[arg(short, long, default_value_t = 4)]
+    num_threads: usize,
+}
+
+struct PbMsg {
     num: usize,
-    img: String,
+    description: String,
+    xkcd: Xkcd,
 }
-
-type SyncState = HashMap<usize, Xkcd>;
-
-fn fetch_json(url: &str) -> Result<Xkcd> {
-    let reader = ureq::get(url)
-        .call()
-        .context(format!("fetching {url}"))?
-        .into_reader();
-
-    let xkcd: Xkcd =
-        serde_json::from_reader(BufReader::new(reader)).context("deserializing xkcd json")?;
-
-    Ok(xkcd)
-}
-
-fn build_json_url_for_num(num: usize) -> String {
-    format!("http://xkcd.com/{num}/info.0.json")
-}
-
-fn create_image_file_path(num: usize, comic_url: &str, comic_dir: &str) -> Result<PathBuf> {
-    let comic_file_name = comic_url.split('/').last().context(format!(
-        "extracting filename from image url {url}",
-        url = comic_url
-    ))?;
-    let mut comic_path_name = PathBuf::new();
-    comic_path_name.push(comic_dir);
-    comic_path_name.push(format!("{num:05}_{file}", file = comic_file_name));
-    Ok(comic_path_name)
-}
-
-fn download_xkcd_image_to_dir(xkcd: &Xkcd, target_file: &Path) -> Result<()> {
-    let img_reader = ureq::get(&xkcd.img)
-        .call()
-        .context(format!("fetching {url}", url = xkcd.img))?
-        .into_reader();
-    let writer =
-        fs::File::create(target_file).context(format!("open {target_file:?} for writing"))?;
-
-    std::io::copy(&mut BufReader::new(img_reader), &mut BufWriter::new(writer)).context(
-        format!(
-            "stream data from {url} to {file:?}",
-            url = xkcd.img,
-            file = target_file
-        ),
-    )?;
-    Ok(())
-}
-
 fn main() -> Result<()> {
-    // @TODO: Extract to commandline arguments
-    let comic_dir = "comics";
-    let sync_state_file = "xkcd_sync_state.json";
-
-    fs::create_dir_all(comic_dir)
-        .context(format!("create commic storage directory {comic_dir}"))?;
-
-    println!("Opening {file} as sync state", file = sync_state_file);
-    let mut sync_state = match fs::File::open(sync_state_file) {
-        Ok(file) => serde_json::from_reader(BufReader::new(file)).context(format!(
-            "deserializing sync state from {file}",
-            file = sync_state_file
-        ))?,
-        Err(_) => SyncState::new(),
-    };
-
-    let pb = ProgressBar {
+    let progress_bar = ProgressBar {
         full_chars: Vec::from(cli_progress::UNICODE_BAR_FULL_CHARS),
         empty_char: ' ',
         ..ProgressBar::default()
     };
+    let cli = Cli::parse();
+    let comic_dir = cli.comic_dir.clone();
+    let sync_state_file = &cli.sync_state_file;
+    let num_threads = cli.num_threads;
 
-    pb.update(0f32, "Fetching latest comic information...")?;
+    fs::create_dir_all(&comic_dir)
+        .context(format!("create commic storage directory {comic_dir}"))?;
 
-    let lastest_url = "https://xkcd.com/info.0.json";
-    let latest = fetch_json(lastest_url)?;
+    // Create a channel for sending messages from the worker threads to the main thread.
+    let (tx, rx) = mpsc::channel();
 
-    let mut updated = 0;
-    let mut skipped = 0;
-    for num in 1..=latest.num {
-        let mut already_updated = false;
-        if let Entry::Vacant(e) = sync_state.entry(num) {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Fetching comic metadata #{num}"),
-            )?;
-            let json_url = build_json_url_for_num(num);
-            match fetch_json(&json_url) {
+    // Create a thread pool with 4 threads.
+    let pool = ThreadPool::new(num_threads);
+
+    // Shared vector to store the results, wrapped in Arc and Mutex for thread-safe access.
+    //let results = Arc::new(Mutex::new(Vec::new()));
+
+    let mut sync_state = AppState::from_file(&sync_state_file.to_string()).unwrap();
+    let last_num = sync_state.last_num;
+    progress_bar.update(0f32, "Fetching latest comic information...")?;
+
+    for num in 1..=last_num {
+        // Clone Arc so that each thread has ownership of the reference.
+        //let results = Arc::clone(&results);
+
+        let tx: mpsc::Sender<PbMsg> = tx.clone();
+
+        // Execute each task in the thread pool.
+
+        let dir = format!("{}", comic_dir.clone());
+        pool.execute(move || {
+            let result1 = Xkcd::get_xkcd(num);
+            let mut _skipped = false;
+            match result1 {
                 Ok(xkcd) => {
-                    e.insert(xkcd);
-                    updated += 1;
-                    already_updated = true;
+                  _skipped = xkcd.save_image_file(&dir);
+
+                    tx.send(PbMsg {
+                        xkcd: xkcd,
+                        num,
+                        description: format!("Downloaded #{num}"),
+                    })
+                    .expect("Failed to send message");
+                    //let mut results = results.lock().unwrap();
+                    //results.push((num, xkcd));
+                    // Send a progress update to the main thread.
                 }
                 Err(error) => {
                     println!(
@@ -123,58 +93,46 @@ fn main() -> Result<()> {
                         err = error.root_cause()
                     );
                     println!("Note: Skipping #{num} as it will be retieved next time.");
-                    continue;
+                    //continue;
                 }
             }
-        }
-        let xkcd = sync_state.get(&num).unwrap();
-
-        let comic_target_path = create_image_file_path(num, &xkcd.img, comic_dir)?;
-        if comic_target_path.try_exists().context(format!(
-            "establishing whether {file:?} exists",
-            file = comic_target_path
-        ))? {
-            skipped += 1;
-        } else {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Fetching comic image #{num}"),
-            )?;
-            match download_xkcd_image_to_dir(xkcd, &comic_target_path) {
-                Ok(_) => {
-                    if !already_updated {
-                        updated += 1;
-                    }
-                }
-                Err(error) => {
-                    println!(
-                        "Error retrieving image for #{num}: {err}",
-                        err = error.root_cause()
-                    );
-                    println!("Note: Skipping #{num} as it will be retieved next time.");
-                    continue;
-                }
-            }
-        }
-
-        if updated > 0 && updated % 50 == 0 {
-            pb.update(
-                num as f32 / latest.num as f32 * 100f32,
-                &format!("Saving sync state to {file}", file = sync_state_file),
-            )?;
-            let file = fs::File::create(sync_state_file)
-                .context(format!("open {file} for writing", file = sync_state_file))?;
-            serde_json::to_writer(BufWriter::new(file), &sync_state)
-                .context("serialize sync state")?;
-        }
+        });
     }
 
-    println!("Saving sync state to {file}", file = sync_state_file);
-    let file = fs::File::create(sync_state_file)
-        .context(format!("open {file} for writing", file = sync_state_file))?;
-    serde_json::to_writer(BufWriter::new(file), &sync_state).context("serialize sync state")?;
+    // Drop the original sender so that the channel closes when all threads are done.
+    drop(tx);
+    // Wait for all tasks to finish by dropping the pool.
 
-    println!("Finished sync run: Updated {updated} comics, skipped {skipped} comics.");
+    // Main thread listens for messages and updates the status bar.
+    for pb_msg in rx {
+      let _ = sync_state.add_xkcd(pb_msg.num, pb_msg.xkcd);
+      if pb_msg.num % 50 == 0 {
+        let _ = sync_state
+        .save_progress()
+        .context("Failed to save sync state");
+      }
+        progress_bar.update(
+            pb_msg.num as f32 / last_num as f32 * 100f32,
+            &format!("{} #{}", pb_msg.description, pb_msg.num),
+        )?;
+    }
+    pool.join();
 
+    // Print the results.
+    //let results = results.lock().unwrap();
+    progress_bar.update(100f32, "Sync completed!")?;
+    //for (num, xkcd) in results.iter() {
+    //    let _ = sync_state.add_xkcd(num.to_owned(), xkcd.clone());
+    //}
+
+    let _ = sync_state
+        .save_progress()
+        .context("Failed to save sync state");
+
+    println!(
+        "\nFinished sync run: Checked {} comics, skipped: {}",
+        last_num,
+        sync_state.skipped
+    );
     Ok(())
 }
