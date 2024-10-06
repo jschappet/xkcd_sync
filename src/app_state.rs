@@ -16,7 +16,7 @@ pub struct AppState {
     pub sync_state_file: String, 
     pub last_num: usize,
     //pub updated: i32 ,
-    //pub skipped: i32 ,
+    pub skipped: i32 ,
 }
 
 
@@ -25,7 +25,8 @@ impl AppState {
     pub fn add_xkcd(&mut self, num: usize, xkcd: Xkcd) -> Result<()> {
         match self.state.entry(num) {
             Entry::Occupied(_) => {
-                println!("xkcd #{num} already exists in the state. Skipping.",);
+                //println!("xkcd #{num} already exists in the state. Skipping.",);
+                self.skipped += 1;
             }
             Entry::Vacant(entry) => {
                 entry.insert(xkcd);
@@ -60,6 +61,8 @@ impl AppState {
                 let latest = fetch_json(lastest_url)?;
                 latest.num
             },
+            skipped: 0,
+            //updated: 0,
            
         })
     }
