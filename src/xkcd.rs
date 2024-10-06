@@ -13,7 +13,7 @@ pub struct Xkcd {
     safe_title: String,
     transcript: String,
     alt: String,
-    title: String,
+    pub title: String,
     day: String,
     pub num: usize,
     pub img: String,

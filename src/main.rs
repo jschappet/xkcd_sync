@@ -1,5 +1,4 @@
 use crate::cli_progress::ProgressBar;
-
 mod cli_progress;
 
 mod app_state;
@@ -13,7 +12,8 @@ use anyhow::{Context, Result};
 use std::fs;
 
 use clap::Parser;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+
 //use std::time::Duration;
 use threadpool::ThreadPool;
 #[derive(Parser)]
@@ -29,6 +29,10 @@ struct Cli {
     num_threads: usize,
 }
 
+struct PbMsg {
+   num: usize,
+   description: String,
+}
 fn main() -> Result<()> {
     let progress_bar = ProgressBar {
         full_chars: Vec::from(cli_progress::UNICODE_BAR_FULL_CHARS),
@@ -42,6 +46,10 @@ fn main() -> Result<()> {
 
     fs::create_dir_all(&comic_dir)
         .context(format!("create commic storage directory {comic_dir}"))?;
+
+
+    // Create a channel for sending messages from the worker threads to the main thread.
+    let (tx, rx) = mpsc::channel();
 
     // Create a thread pool with 4 threads.
     let pool = ThreadPool::new(num_threads);
@@ -57,6 +65,8 @@ fn main() -> Result<()> {
         // Clone Arc so that each thread has ownership of the reference.
         let results = Arc::clone(&results);
 
+        let tx: mpsc::Sender<PbMsg> = tx.clone();
+
         // Execute each task in the thread pool.
         
         
@@ -68,10 +78,18 @@ fn main() -> Result<()> {
           //let results = Arc::clone(&results);
             match result1 {
                 Ok(xkcd) => {
+                    tx.send(
+                      PbMsg {
+                        num,
+                        description: format!("Downloaded #{num}: {}", xkcd.title),
+                      }
+                    )
+                    .expect("Failed to send message");
                     _skipped = xkcd.save_image_file(&dir);
                     let mut results = results.lock().unwrap();
                     results.push((num, xkcd));
-        
+                    // Send a progress update to the main thread.
+                    
                 }
                 Err(error) => {
                     println!(
@@ -94,7 +112,18 @@ fn main() -> Result<()> {
           });
     }
 
+    // Drop the original sender so that the channel closes when all threads are done.
+    drop(tx);
     // Wait for all tasks to finish by dropping the pool.
+    
+
+// Main thread listens for messages and updates the status bar.
+    for pb_msg in rx {
+      progress_bar.update(
+              pb_msg.num as f32 / last_num as f32 * 100f32,
+              &format!("{} #{}", pb_msg.description, pb_msg.num  ),
+          )?;
+    }
     pool.join();
 
 // Print the results.
