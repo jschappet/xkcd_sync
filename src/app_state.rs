@@ -22,31 +22,7 @@ pub struct AppState {
 
 impl AppState {
 
-    pub fn get_xkcd(&mut self, num: usize) -> Result<&Xkcd> {
-
-      if let Entry::Vacant(e) = self.state.entry(num) {
-        
-        let json_url = build_json_url_for_num(num);
-        match fetch_json(&json_url) {
-            Ok(xkcd) => {
-                e.insert(xkcd);
-                self.updated  += 1;
-               //return Ok(&xkcd);
-               // already_updated = true;
-            }
-            Err(error) => {
-                println!(
-                    "Error retrieving metadata for #{num}: {err}",
-                    err = error.root_cause()
-                );
-                println!("Note: Skipping #{num} as it will be retieved next time.");
-                return Err(error);
-            }
-        } 
-    } 
-    return  Ok(self.state.get(&num).unwrap());
     
-    }
 
     pub fn save_progress(&self) -> Result<()> {
         let file = fs::File::create(&self.sync_state_file)
@@ -79,20 +55,4 @@ impl AppState {
            
         })
     }
-}
-
-pub fn fetch_json(url: &str) -> Result<Xkcd> {
-  let reader = ureq::get(url)
-      .call()
-      .context(format!("fetching {url}"))?
-      .into_reader();
-
-  let xkcd: Xkcd =
-      serde_json::from_reader(BufReader::new(reader)).context("deserializing xkcd json")?;
-
-  Ok(xkcd)
-}
-
-fn build_json_url_for_num(num: usize) -> String {
-  format!("http://xkcd.com/{num}/info.0.json")
 }
