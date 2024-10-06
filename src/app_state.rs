@@ -15,14 +15,24 @@ pub struct AppState {
     //pub progress_bar: ProgressBar, 
     pub sync_state_file: String, 
     pub last_num: usize,
-    pub updated: i32 ,
-    pub skipped: i32 ,
+    //pub updated: i32 ,
+    //pub skipped: i32 ,
 }
 
 
 impl AppState {
 
-    
+    pub fn add_xkcd(&mut self, num: usize, xkcd: Xkcd) -> Result<()> {
+        match self.state.entry(num) {
+            Entry::Occupied(_) => {
+                println!("xkcd #{num} already exists in the state. Skipping.",);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(xkcd);
+            }
+        }
+        Ok(())
+    }
 
     pub fn save_progress(&self) -> Result<()> {
         let file = fs::File::create(&self.sync_state_file)
@@ -50,8 +60,6 @@ impl AppState {
                 let latest = fetch_json(lastest_url)?;
                 latest.num
             },
-            updated: 0 ,
-            skipped: 0,
            
         })
     }

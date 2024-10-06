@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Xkcd {
     month: String,
     link: String,
@@ -20,7 +20,7 @@ pub struct Xkcd {
 }
 
 impl Xkcd {
-    
+
     pub fn get_xkcd(num: usize) -> Result<Xkcd> {
         let json_url = build_json_url_for_num(num);
         match fetch_json(&json_url) {

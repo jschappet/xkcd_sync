@@ -47,15 +47,15 @@ fn main() -> Result<()> {
     let pool = ThreadPool::new(num_threads);
 
     // Shared vector to store the results, wrapped in Arc and Mutex for thread-safe access.
-    //let results = Arc::new(Mutex::new(Vec::new()));
+    let results = Arc::new(Mutex::new(Vec::new()));
 
-    let sync_state = AppState::from_file(&sync_state_file.to_string()).unwrap();
+    let mut sync_state = AppState::from_file(&sync_state_file.to_string()).unwrap();
     let last_num = sync_state.last_num;
     progress_bar.update(0f32, "Fetching latest comic information...")?;
 
     for num in 1..=last_num {
         // Clone Arc so that each thread has ownership of the reference.
-        //let results = Arc::clone(&results);
+        let results = Arc::clone(&results);
 
         // Execute each task in the thread pool.
         
@@ -69,7 +69,9 @@ fn main() -> Result<()> {
             match result1 {
                 Ok(xkcd) => {
                     _skipped = xkcd.save_image_file(&dir);
-                    
+                    let mut results = results.lock().unwrap();
+                    results.push((num, xkcd));
+        
                 }
                 Err(error) => {
                     println!(
@@ -81,10 +83,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Store the result.
-            //let mut results = results.lock().unwrap();
-            //results.push((num, skipped));
-
             //if sync_state.updated > 0 && sync_state.updated % 5 == 0 {
                 // progress_bar.update(
                 //     num as f32 / last_num as f32 * 100f32,
@@ -93,13 +91,19 @@ fn main() -> Result<()> {
             //    let _ = sync_state.save_progress();
             //}
 
-            //let mut results = results.lock().unwrap();
-            //results.push((num, square));
-        });
+          });
     }
 
     // Wait for all tasks to finish by dropping the pool.
     pool.join();
+
+// Print the results.
+    let results = results.lock().unwrap();
+    progress_bar.update(100f32, "Sync completed!")?;
+    for (num, xkcd) in results.iter() {
+      let _ = sync_state.add_xkcd(num.to_owned(), xkcd.clone());
+    }
+
     let _ = sync_state
         .save_progress()
         .context("Failed to save sync state");
