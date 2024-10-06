@@ -10,7 +10,7 @@ const DEFAULT_EMPTY_CHAR: char = '-';
 
 pub const UNICODE_BAR_FULL_CHARS: &[char] = &['█', '▉', '▊', '▋', '▌', '▍', '▎', '▏'];
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 
 pub struct ProgressBar {
     pub max_width: u16,
